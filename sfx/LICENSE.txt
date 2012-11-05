@@ -1,0 +1,29 @@
+The audio files in this folder were created by Daniel Seither, based on a set
+of files from FreeSound. They can be distributed under the terms of the
+	Creative Commons Attribution 3.0 License [2]
+
+
+The files are based on the following recordings:
+
+boo.ogg:
+Boo!.mp3 by freki3333
+http://www.freesound.org/people/freki3333/sounds/131594/
+CC0 1.0 (see [1])
+
+beep.ogg:
+negativebeep.wav by Splashdust
+http://www.freesound.org/people/Splashdust/sounds/67454/
+CC0 1.0 (see [1])
+
+yeah.ogg:
+Audience_Unison_Yes by unchaz
+http://www.freesound.org/people/unchaz/sounds/150971/
+CC-BY 3.0 (see [2])
+
+clock.ogg:
+Kukuklok 1 slag.wav by HerbertBoland
+http://www.freesound.org/people/HerbertBoland/sounds/28113/
+CC-BY 3.0 (see [2])
+
+[1] http://creativecommons.org/publicdomain/zero/1.0/
+[2] http://creativecommons.org/licenses/by/3.0/

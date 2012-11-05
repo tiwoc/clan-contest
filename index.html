@@ -1,0 +1,646 @@
+<!DOCTYPE html>
+<html>
+<!--
+Copyright 2011 Daniel Seither (post@tiwoc.de)
+
+This file is part of Clan Contest.
+
+Clan Contest is free software: you can redistribute it and/or modify
+it under the terms of the GNU General Public License as published by
+the Free Software Foundation, either version 3 of the License, or
+(at your option) any later version.
+
+Clan Contest is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+GNU General Public License for more details.
+
+You should have received a copy of the GNU General Public License
+along with Clan Contest.  If not, see http://www.gnu.org/licenses/.
+-->
+<head>
+<title>Control -- Clan Contest</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<link rel="stylesheet" type="text/css" href="style/index.css">
+
+<script src="lib/jquery-1.6.1.js"></script>
+<script src="lib/state.js"></script>
+<script src="questions.js"></script>
+<script type="text/javascript">
+
+	// audio files to be loaded
+	// format: filename without extension, label
+	var audiofiles = {
+		'yeah': 'Yeah!',
+		'boo': 'Boo!',
+		'beep': 'Beep',
+		'clock': 'Clock',
+	};
+	
+	// game window
+	var game = null;
+	
+	// maximum number of answers per question
+	var max_answers;
+
+	// state manager
+	var state = null;
+	
+	// produces a changeset with an entry for every setting, set to a default value
+	function get_initial_changeset() {
+		var init = {
+			'teams.0.name': 'Team left',
+			'teams.0.points': 0,
+			'teams.0.misses': 0,
+			'teams.1.name': 'Team right',
+			'teams.1.points': 0,
+			'teams.1.misses': 0,
+			'screen': 'splash',
+			'round.id': 0,
+			'round.points': 0,
+			'round.finished': false,
+			'finals.points': 0
+		}
+	
+		for (var a = 0; a < max_answers; a++)
+			init['round.answers_shown.'+a] = -1;
+	
+		for (var q = 0; q < answers_finals.length; q++) {
+			for (var p = 0; p < 2; p++) {
+				init['finals.answers.'+p+'.'+q+'.id'] = -1;
+				init['finals.answers.'+p+'.'+q+'.answer_shown'] = false;
+				init['finals.answers.'+p+'.'+q+'.points_shown'] = false;
+			}
+		}
+	
+		return init;
+	}
+
+	// tasks to be run after DOM is fully loaded
+	$(document).ready(function() {
+
+		// init audio files and play buttons
+		var audiodiv = $('#audio');
+		$.each(audiofiles, function(file, title) {
+			audiodiv.append('<input type="button" id="play_'+file+'" value="'+title+'" onclick="play_sound(\''+file+'\');"></input>');
+		});
+
+		// calculate maximum number of answers per round
+		max_answers = 0;
+		$.each(answers_rounds, function(idx_round, answers) {
+			if (answers.length > max_answers)
+				max_answers = answers.length;
+		});
+		
+		// prepare answers for finals
+		for (var p = 0; p < 2; p++) {
+			var finalsdiv = $('#questions_p'+p);
+			for (var q = 0; q < questions_finals.length; q++) {
+			
+				// list of correct answers
+				var answers = '<select size="1" id="finals_answers_p'+p+'_'+q+'" onchange="finals_answer_changed('+p+','+q+');"><option value="-1" selected="selected"></option>';
+				$.each(answers_finals[q], function(idx_a, answer) {
+					answers += '<option value="'+idx_a+'">'+answer[0]+' ('+answer[1]+')</option>';
+				});
+				answers += '</select>';
+			
+				// text field for wrong answer
+				var wrong_answer = '<input type="text" size="25" id="finals_wrong_answer_p'+p+'_'+q+'" onchange="finals_answer_changed('+p+','+q+');" / >';
+			
+				// checkboxes for visibility of answer and points
+				var visible = '<input type="checkbox" id="finals_answer_visible_p'+p+'_'+q+'" value="1" onchange="finals_show_answer('+p+','+q+');" / >Show answer ';
+				visible += '<input type="checkbox" id="finals_points_visible_p'+p+'_'+q+'" value="1" onchange="finals_show_points('+p+','+q+');" / >Show points';
+			
+				// add entry for question
+				finalsdiv.append('<li>'+questions_finals[q]+'<br / >'+answers+wrong_answer+'<br / >'+visible+'</li>');
+			}
+		}
+		
+		// enable/disable sound buttons
+		mute_changed();
+		
+		// initialize game state
+		state = new State(publish_changes);
+		state.set_undo_listener(function(can_undo) {
+			$('#btn_undo').attr('disabled', !can_undo);
+		});
+		state.set_redo_listener(function(can_redo) {
+			$('#btn_redo').attr('disabled', !can_redo);
+		});
+		state.commit_changes(get_initial_changeset());
+	});
+
+	// warn before closing window
+	// source: https://developer.mozilla.org/en/DOM/window.onbeforeunload
+	window.onbeforeunload = function (e) {
+		var e = e || window.event;
+		if (e)
+			e.returnValue = '*';
+		return '*';
+	};
+
+	// open the game in a popup window
+	function open_game_window() {
+		game = window.open('popup.html', 'game', 'width=1024,height=768,resizable=yes');
+	}
+	
+	// callback when game window is initialized
+	function game_window_init_done() {
+		game.apply_changes(state.get_consolidated());
+		game.set_timer(timer.get_time());
+	}
+	
+	// callback when game window is closed
+	function game_window_closed() {
+		game = null;
+	}
+
+	// play sound object
+	function play_sound(sound) {
+		if (!$('#chk_mute').is(':checked')) {
+			$('#audiodummy').html('<audio src="sfx/'+sound+'.ogg" autoplay="autoplay" / >');
+		}
+	}
+
+	// helper to publish changes to the game and control windows
+	// Only to be called from State() objects!
+	function publish_changes(changes) {
+
+		// apply changes to game window, if it has been opened
+		if (game) {
+			game.apply_changes(changes);
+		}
+
+		// apply changes locally
+		$.each(changes, function(setting, value) {
+			var args = setting.split('.');
+			var toplevel = args.shift();
+	
+			state_changer[toplevel](args, value);
+		});
+	}
+	
+	// helper for finals: re-calculate total points
+	function finals_recalc_points(changes) {
+	
+		// combine state from history with current changes
+		var current_state = state.get_consolidated();
+		$.each(changes, function(setting, value) {
+			current_state[setting] = value;
+		});
+
+		// re-calculate total points
+		changes['finals.points'] = 0;
+		for (var p = 0; p < 2; p++) {
+			for (var q = 0; q < questions_finals.length; q++) {
+				var points_shown = current_state['finals.answers.'+p+'.'+q+'.points_shown'];
+				var id = current_state['finals.answers.'+p+'.'+q+'.id'];
+				var question_points = 0;
+				
+				if ((typeof(id) == 'number') && (id >= 0))
+					question_points = answers_finals[q][id][1];					
+				
+				if (points_shown) {
+					changes['finals.points'] += question_points;
+				}
+			}
+		}
+		
+		return changes;
+	}
+	
+	// ##### start of timer #####
+
+	var timer = new Object();
+
+	timer._running = false;
+	timer._timeleft = timers[0];
+
+	// configure timer for given player
+	timer.init = function(player) {
+		this.stop();
+		this.set_time(timers[player]);
+	}
+	
+	// set timer value
+	timer.set_time = function(timeleft) {
+		this._timeleft = timeleft;
+		if (game)
+			game.set_timer(timeleft);
+	}
+	
+	// get timer value
+	timer.get_time = function(timeleft) {
+		return this._timeleft;
+	}
+	
+	// start timer
+	timer.start = function() {
+		this._running = true;
+		window.setTimeout('timer._tick();', 1000);
+		$('#btn_timer_start').attr('disabled', true);
+	}
+	
+	// stop timer
+	timer.stop = function() {
+		this._running = false;
+		$('#btn_timer_start').attr('disabled', false);
+	}
+	
+	// executed once a second while timer is running
+	timer._tick = function() {
+		var timeleft = this.get_time() - 1;
+
+		if (this._running) {
+			this.set_time(timeleft);
+		
+			if (timeleft > 0) {
+				window.setTimeout('timer._tick();', 1000);
+			
+			} else {
+				this.stop();
+				play_sound('clock');
+			}
+		}
+	}
+	
+	// ##### end of timer #####
+	// ##### start of state changer #####
+	
+	/* !!! General rules for state changer !!!
+	 * 
+	 * Don't use state from the document as it may not be valid at all.
+	 * Only state from state variables is guaranteed to be correct
+	 * (think undo/redo).
+	 *
+	 * Don't trigger further state changes as these can degrade
+	 * usability of undo/redo and might cause loops. Watch for document
+	 * changes that trigger event handlers which trigger state changes!
+	 */ 
+
+	// contains change handlers for the control window
+	var state_changer = new Object();
+
+	// handle teams.* settings
+	state_changer.teams = function(args, value) {
+		var team = args.shift();
+		var setting = args.shift();
+		
+		switch (setting) {
+			case 'name':
+				// set team name
+				$('#txt_name_'+team).val(value);
+				break;
+			
+			case 'misses':
+				// set team misses
+				$('#btn_miss'+team).attr('disabled', (value >= 3))
+				break;
+		}
+	}
+	
+	// handle screen.* settings
+	state_changer.screen = function(args, value) {
+		var screen = args.shift();
+		
+		// switch to screen
+		$('.screen').hide();
+		$('#view_'+value).show();
+		
+		// stop timer
+		if (value != 'finals') {
+			timer.stop();
+		}
+	}
+	
+	// handle round.* settings
+	state_changer.round = function(args, value) {
+		var setting = args.shift();
+		
+		switch (setting) {
+			case 'id':
+				var idx_r = value;
+			
+				// go to next round
+				$('#round').text(idx_r+1);
+
+				// generate answer buttons
+				var answers = $('#answers');
+				answers.empty();
+				$.each(answers_rounds[idx_r], function(idx_a, answer) {
+					var val = answer[0]+' ('+answer[1]+')';
+					var handler = 'right_answer_given('+idx_a+');';
+					answers.append('<input type="button" id="btn_answer" value="'+val+'" onclick="'+handler+'" id="answer'+idx_a+'"></input>');
+				});
+				
+				// enable/disable "next" buttons
+				if (idx_r < multiplicator.length - 1) {
+					$('#btn_next_round').attr('disabled', false);
+					$('#btn_goto_finals').attr('disabled', true);
+				} else {
+					$('#btn_next_round').attr('disabled', true);
+					$('#btn_goto_finals').attr('disabled', false);
+				}
+				break;
+		
+			case 'answers_shown':
+				var idx_answer = args.shift();
+				
+				// enable/disable answer button
+				if (value >= 0)
+					$('#answer'+idx_answer).attr('disabled', true)
+				else
+					$('#answer'+idx_answer).attr('disabled', false);
+				break;
+
+			case 'finished':
+				// disable "won" buttons if finished
+				$('#btn_left_wins').attr('disabled', value);
+				$('#btn_right_wins').attr('disabled', value);
+				break;
+		}
+	}
+
+	// handle finals.* settings
+	state_changer.finals = function(args, value) {
+		var setting = args.shift();
+		
+		switch (setting) {
+			case 'answers':
+				var player = args.shift();
+				var question = args.shift();
+				var setting2 = args.shift();
+
+				switch (setting2) {
+				
+					case 'id':
+						// set default values for answer fields
+						var right_answer_disabled = false;
+						var wrong_answer_disabled = false;
+						var right_answer_index = -1;
+						var wrong_answer_text = '';
+						
+						if (typeof(value) == 'number') {
+							// answer is numeric => chosen from right answers or no answer given
+							right_answer_index = value;
+							
+							if (value >= 0) {
+								wrong_answer_disabled = true;
+							}
+								
+						} else {
+							// answer is textual => wrong answer
+							wrong_answer_text = value;
+							right_answer_disabled = true;
+						}
+						
+						// enable/disable answer fields
+						var right_answer = $('#finals_answers_p'+player+'_'+question);
+						right_answer.val(right_answer_index);
+						right_answer.attr('disabled', right_answer_disabled);
+						
+						var wrong_answer = $('#finals_wrong_answer_p'+player+'_'+question);
+						wrong_answer.val(wrong_answer_text);
+						wrong_answer.attr('disabled', wrong_answer_disabled);
+						break;
+						
+					case 'answer_shown':
+						// show/hide answer
+						var checkbox = $('#finals_answer_visible_p'+player+'_'+question);
+						checkbox.prop("checked", value);
+						break;
+						
+					case 'points_shown':
+						// show/hide points
+						var checkbox = $('#finals_points_visible_p'+player+'_'+question);
+						checkbox.prop("checked", value);
+						break;
+				}
+				break;
+		}
+	}
+	
+	// ##### end of state changer #####
+	// ##### start of event handlers #####
+	
+	/* !!! General rules for event handlers !!!
+	 *
+	 * Don't change the document directly; always use commit_changes to
+	 * change the game state.
+	 *
+	 * Exception: Things that should not be visible in both the game
+	 * window and in undo/redo can be changed directly.
+	 */
+	
+	// update state of play buttons
+	function mute_changed() {
+		var muted = $('#chk_mute').is(':checked');
+		$('#audio > input:button').attr('disabled', muted);
+	}
+
+	// go to given screen
+	// parameter: screen name
+	function goto_screen(screen) {
+		var changes = {'screen': screen};
+
+		// save changes from settings screen
+		if (screen == 'rounds') {
+			changes['teams.0.name'] = $('#txt_name_0').val();
+			changes['teams.1.name'] = $('#txt_name_1').val();
+		}
+
+		state.commit_changes(changes);
+	}
+
+	// answer was clicked
+	// parameter: answer index
+	function right_answer_given(idx_a) {
+		var changes = {};
+		var current_state = state.get_consolidated();
+		var idx_r = current_state['round.id'];
+		
+		// show answer
+		var setting = 'round.answers_shown.'+idx_a;
+		changes[setting] = idx_r;
+		
+		// add points
+		setting = 'round.points';
+		var round_points = current_state[setting];
+		var answer_points = answers_rounds[idx_r][idx_a][1];
+		changes[setting] = round_points+answer_points * multiplicator[idx_r];
+		
+		state.commit_changes(changes);
+
+		play_sound('yeah');
+	}
+	
+	// team gave wrong answer
+	// parameter: team (0 or 1)
+	function wrong_answer_given(team) {
+		var changes = {};
+		var setting = 'teams.'+team+'.misses';
+		changes[setting] = state.get_consolidated()[setting]+1;
+		state.commit_changes(changes);
+
+		play_sound('buh');
+	}
+
+	// given team has won the current round
+	// parameter: team (0 or 1)
+	function team_won_round(team) {
+		var changes = {};
+		var setting = 'teams.'+team+'.points';
+		
+		var current_state = state.get_consolidated();
+		var round_points = current_state['round.points'];
+		var team_points = current_state[setting];
+		
+		changes[setting] = team_points+round_points;
+		changes['round.finished'] = true;
+		state.commit_changes(changes);
+		
+		play_sound('yeah');
+	}
+	
+	// start next round
+	function goto_next_round() {
+		var changes = {};
+		var current_state = state.get_consolidated();
+
+		changes['round.id'] = current_state['round.id']+1;
+		changes['round.points'] = 0;
+		changes['round.finished'] = false;
+		
+		for (var a = 0; a < max_answers; a++) {
+			changes['round.answers_shown.'+a] = -1;
+		}
+
+		changes['teams.0.misses'] = 0;
+		changes['teams.1.misses'] = 0;
+		state.commit_changes(changes);
+	}
+	
+	// finals: an answer is chosen or typed in
+	function finals_answer_changed(player, question) {
+		var right_answer = $('#finals_answers_p'+player+'_'+question).val();
+		var wrong_answer = $('#finals_wrong_answer_p'+player+'_'+question).val();
+		var answer;
+		
+		// answer is chosen from dropdown
+		if (right_answer >= 0)
+			answer = parseInt(right_answer)
+		
+		// answer is typed in
+		else if (wrong_answer != '')
+			answer = wrong_answer
+		
+		// no answer is given
+		else
+			answer = -1;
+		
+		var changes = {};
+		changes['finals.answers.'+player+'.'+question+'.id'] = answer;
+
+		// re-calculate points
+		changes = finals_recalc_points(changes);
+
+		state.commit_changes(changes);
+	}
+	
+	// finals: answer should be shown/hidden
+	function finals_show_answer(player, question) {
+		var shown = $('#finals_answer_visible_p'+player+'_'+question).is(':checked');
+		var changes = {};
+
+		changes['finals.answers.'+player+'.'+question+'.answer_shown'] = shown;
+		state.commit_changes(changes);
+	}
+	
+	// finals: points should be shown/hidden
+	function finals_show_points(player, question) {
+		var current_state = state.get_consolidated();
+		var changes = {};
+
+		// show/hide points
+		var shown = $('#finals_points_visible_p'+player+'_'+question).is(':checked');
+		changes['finals.answers.'+player+'.'+question+'.points_shown'] = shown;
+
+		// re-calculate points
+		changes = finals_recalc_points(changes);
+		
+		state.commit_changes(changes);
+
+		if (shown) {
+			if (typeof(current_state['finals.answers.'+player+'.'+question+'.id']) == 'string') {
+				play_sound('boo');
+			} else {
+				play_sound('yeah');
+			}
+		}
+	}
+	
+	// ##### end of event handlers #####
+</script>
+</head>
+
+<body>
+<input type="button" id="btn_open_win" value="Open game window" onclick="open_game_window();"></input><br />
+<input type="button" id="btn_undo" value="< undo" onclick="state.undo();"></input>
+<input type="button" id="btn_redo" value="redo >" onclick="state.redo();"></input>
+
+<!-- splash -->
+<div class="screen" id="view_splash">
+	<h2>Settings</h2>
+	<label for="txt_name_0">Left team: </label><input type="text" id="txt_name_0" id="txt_name_0"></input><br />
+	<label for="txt_name_1">Right team: </label><input type="text" id="txt_name_1" id="txt_name_1"></input><br />
+	<input type="button" id="btn_goto_rounds" value="start first round" onclick="goto_screen('rounds');"></input>
+</div>
+
+<!-- round 1 to 4 -->
+<div class="screen" id="view_rounds">
+	<h2>Round <span id="round"></span></h2>
+	<h3>Answers</h3>
+	<div id="answers"><!-- placeholder for answers, filled using JS --></div>
+	<div id="misses">
+	<input type="button" id="btn_miss0" value="Mistake (left team)" onclick="wrong_answer_given(0);"></input>
+	<input type="button" id="btn_miss1" value="Mistake (right team)" onclick="wrong_answer_given(1);"></input>
+	</div>
+
+	<h3>End of round</h3>
+	<input type="button" id="btn_left_wins" value="left team wins" onclick="team_won_round(0);"></input>
+	<input type="button" id="btn_right_wins" value="right team wins" onclick="team_won_round(1);"></input><br />
+	<input type="button" id="btn_next_round" value="go to next round" onclick="goto_next_round();"></input>
+	<input type="button" id="btn_goto_finals" value="go to finals" onclick="goto_screen('finals');"></input>
+</div>
+
+<!-- finals -->
+<div class="screen" id="view_finals">
+	<h2>Finals</h2>
+	<h3>Questions</h3>
+	<div>
+	<div style="float: left; padding-right: 4em;"><ul id="questions_p0" style="margin: 0;"><!-- placeholder for questions, filled using JS --></ul></div>
+	<div style="clear: right;"><ul id="questions_p1" style="margin: 0;"><!-- placeholder for questions, filled using JS --></ul></div>
+	</div>
+	
+	<h3>Timer</h3>
+	<input type="button" id="btn_timer_p1" value="Set timer for first player" onclick="timer.init(0);"></input>
+	<input type="button" id="btn_timer_p2" value="Set timer for second player" onclick="timer.init(1);"></input>
+	<input type="button" id="btn_timer_start" value="Start timer" onclick="timer.start();"></input>
+	
+	<h3>End of game</h3>
+	<input type="button" id="btn_goto_end" value="Show end of game screen" onclick="goto_screen('end');"></input>
+</div>
+
+<!-- end -->
+<div class="screen" id="view_end">
+	<h2>End of game</h2>
+	Done :)
+</div>
+
+<h2>Sounds</h2>
+<input type="checkbox" id="chk_mute" onchange="mute_changed();">Mute sounds</input><br />
+<div id="audio"><!-- placeholder for play buttons, filled using JS --></div>
+<div id="audiodummy"><!-- placeholder for audio objects, filled using JS --></div>
+
+</body>
+</html> 

@@ -1,0 +1,310 @@
+<!DOCTYPE html>
+<html>
+<!--
+Copyright 2011 Daniel Seither (post@tiwoc.de), Cornelius Flöter (cornelius@nxon.de)
+
+This file is part of Clan Contest.
+
+Clan Contest is free software: you can redistribute it and/or modify
+it under the terms of the GNU General Public License as published by
+the Free Software Foundation, either version 3 of the License, or
+(at your option) any later version.
+
+Clan Contest is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+GNU General Public License for more details.
+
+You should have received a copy of the GNU General Public License
+along with Clan Contest.  If not, see http://www.gnu.org/licenses/.
+-->
+<head>
+<title>Clan Contest</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<link rel="stylesheet" type="text/css" href="style/popup.css">
+
+<script src="lib/jquery-1.6.1.js"></script>
+<script src="questions.js"></script>
+<script type="text/javascript">
+
+	// maximum number of answers per question
+	var max_answers = 0;
+
+	// tasks to be run after DOM is fully loaded
+	$(document).ready(function() {
+	
+		// calculate maximum number of answers per round
+		$.each(answers_rounds, function(idx_round, answers) {
+			if (answers.length > max_answers)
+				max_answers = answers.length;
+		});
+		
+		// initialize answer table for rounds
+		var tbl_rounds_answers = $('#tbl_rounds_answers');
+		for (var i = 0; i < max_answers; i++) {
+			tbl_rounds_answers.append(
+				'<tr id="answer_row'+i+'">' +
+				'<td class="answer_priority">'+(i+1)+'.</td>' +
+				'<td class="answer"><span id="answer'+i+'" class="answer_span">&nbsp;</span></td>' +
+				'<td class="answer_points" id="points'+i+'"></td>' +
+				'</tr>'
+			);
+		}
+
+		// initialize answer table for finals
+		var tbl_finals_answers = $('#tbl_finals_answers');
+		for (var i = 0; i < answers_finals.length; i++) {
+			tbl_finals_answers.append(
+				'<tr>' +
+				'<td class="answer"><span id="finals_answer'+i+'-0"></span><span id="finals_answer'+i+'-0-empty">&nbsp;</span></td>' +
+				'<td class="answer_points"><span id="finals_points'+i+'-0"></span><span id="finals_points'+i+'-0-empty">&nbsp;</span></td>' +
+				'<td class="answer_points"><span id="finals_points'+i+'-1"></span><span id="finals_points'+i+'-1-empty">&nbsp;</span></td>' +
+				'<td class="answer"><span id="finals_answer'+i+'-1"></span><span id="finals_answer'+i+'-1-empty">&nbsp;</span></td>' +
+				'</tr>'
+			);
+		}
+		
+		// notify control window
+		window.opener.game_window_init_done();
+	});
+
+	// tasks to be run when window is closed
+	window.onbeforeunload = function (e) {
+	
+		// notify control window
+		window.opener.game_window_closed();
+	};
+	
+	// contains change handlers for the game window
+	var state_changer = new Object();
+
+	// handle teams.* settings
+	state_changer.teams = function(args, value) {
+		var team = args.shift();
+		var setting = args.shift();
+		
+		switch (setting) {
+			case 'name':
+				// set team name
+				$('#name_t'+team).text(value);
+				break;
+			
+			case 'points':
+				// set team points
+				$('#team'+team+'_points').text(value);
+				break;
+				
+			case 'misses':
+				// set team misses
+				for (var i = 0; i < 3; i++) {
+					var text = (i < value) ? 'X' : '&nbsp;';
+					$('#x_t'+team+'_'+ i).html(text);
+				}
+				break;
+		}
+	}
+	
+	// handle screen.* settings
+	state_changer.screen = function(args, value) {
+		var screen = args.shift();
+		
+		// switch to screen
+		$('.screen').hide();
+		$('#view_'+value).show();
+	}
+	
+	// handle round.* settings
+	state_changer.round = function(args, value) {
+		var setting = args.shift();
+		
+		switch (setting) {
+			case 'id':
+				// switch to round
+				$('#round_display').text(value+1);
+		
+				// update multiplicator
+				if (multiplicator[value] > 1)
+					$('#multiplicator_display').text('('+multiplicator[value]+'x)')
+				else
+					$('#multiplicator_display').empty();
+		
+				// set length of answers table
+				$('#tbl_rounds_answers').find('td').addClass('invisible');
+				for (var a = 0; a < answers_rounds[value].length; a++) {
+					$('#answer_row'+a).find('td').removeClass('invisible');
+				}
+				break;
+		
+			case 'points':
+				// set round points
+				$('#round_points').text(value);
+				break;
+				
+			case 'answers_shown':
+				var idx_answer = args.shift();
+				
+				// show/hide answer
+				var text;
+				var points;
+				
+				if (value >= 0) {
+					var answer = answers_rounds[value][idx_answer];
+					text = answer[0];
+					points = answer[1];
+				} else {
+					text = '&nbsp;';
+					points = '&nbsp;';
+				}
+				//rollin effect
+				answer = $('#answer'+idx_answer);
+				answer.css("width", "0%");
+				answer.html(text);
+				answer.animate({width: '100%'}, 500);
+				$('#points'+idx_answer).html(points);
+				break;
+		}
+	}
+	
+	// handle finals.* settings
+	state_changer.finals = function(args, value) {
+		var setting = args.shift();
+		
+		switch (setting) {
+			case 'points':
+				// set points
+				$('#finals_points').text(value);
+				break;
+				
+			case 'answers':
+				// configure answers display
+				var player = args.shift();
+				var idx_question = args.shift();
+				var setting2 = args.shift();
+				
+				switch (setting2) {
+				
+					case 'id':
+						// set answer text and points
+						var text;
+						var points;
+						
+						// wrong answer (given as string)
+						if (typeof(value) == 'string') {
+							text = value;
+							points = '--';
+							
+						// no answer given (yet)
+						} else if (value < 0) {
+							text = '';
+							points = '';
+							
+						// correct answer given (as index)
+						} else {
+							var answer = answers_finals[idx_question][value];
+							text = answer[0];
+							points = answer[1];
+						}
+
+						$('#finals_answer'+idx_question+'-'+player).text(text);
+						$('#finals_points'+idx_question+'-'+player).text(points);
+						break;
+						
+					case 'answer_shown':
+						// show/hide answer
+						$('#finals_answer'+idx_question+'-'+player).toggle(value);
+						$('#finals_answer'+idx_question+'-'+player+'-empty').toggle(!value);
+						break;
+						
+					case 'points_shown':
+						// show/hide points
+						$('#finals_points'+idx_question+'-'+player).toggle(value);
+						$('#finals_points'+idx_question+'-'+player+'-empty').toggle(!value);
+						break;
+				}
+				break;
+		}
+	}
+
+	// ##### start of API (to be called from control window) #####
+
+	// apply changes to game window
+	function apply_changes(changes) {
+		$.each(changes, function(setting, value) {
+			var args = setting.split('.');
+			var toplevel = args.shift();
+			
+			state_changer[toplevel](args, value);
+		});
+	}
+	
+	// set timer value
+	function set_timer(timeleft) {
+		$('#timeleft').text(timeleft);
+	}
+
+	// ##### end of API (to be called from control window) #####
+</script>
+
+</head>
+
+<body>
+<div id="container">
+
+<!-- splash -->
+<div class="screen" id="view_splash">
+	<img src="gfx/logo.png" />
+</div>
+
+<!-- round 1 to 4 -->
+<div class="screen" id="view_rounds">
+	<h1>Round <span id="round_display"></span> <span id="multiplicator_display"></span></h1>
+	<table class="answerstable" id="tbl_rounds_answers"><!-- placeholder for answers, filled using JS --></table>
+	
+	<table class="pointstable">
+		<tr>
+			<td id="name_t0" class="points_left"></td>
+			<td class="points_center"></td>
+			<td id="name_t1" class="points_right"></td>
+		</tr>
+		<tr class="points_row">
+			<td id="team0_points" class="points_left"></td>
+			<td id="round_points" class="points_center"></td>
+			<td id="team1_points" class="points_right"></td>
+		</tr>
+		<tr>
+			<td class="points_left">
+				<span id="x_t0_0">&nbsp;</span>
+				<span id="x_t0_1">&nbsp;</span>
+				<span id="x_t0_2">&nbsp;</span>
+			</td>
+			<td></td>
+			<td class="points_right">
+				<span id="x_t1_2">&nbsp;</span>
+				<span id="x_t1_1">&nbsp;</span>
+				<span id="x_t1_0">&nbsp;</span>
+			</td>
+		</tr>
+	</table>
+</div>
+
+<!-- finals -->
+<div class="screen" id="view_finals">
+	<h1>Finals</h1>
+	<table class="answerstable" id="tbl_finals_answers"><!-- placeholder for answers, filled using JS --></table>
+
+	<table class="pointstable">
+		<tr>
+			<td class="points_left">Time left: <span id="timeleft"></span> s</td>
+			<td class="points_right">&Sigma; <span id="finals_points"></span></td>
+		</tr>
+	</table>
+</div>
+
+<!-- end -->
+<div class="screen" id="view_end">
+	<img src="gfx/logo.png" />
+</div>
+
+</div>
+</body>
+</html> 
